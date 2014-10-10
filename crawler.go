@@ -11,10 +11,10 @@ import (
 )
 
 type Webpage struct {
-	Title string
-	Body  string
-	Url   string
-	Score int
+	Title       string
+	Description string
+	Keywords    string
+	Url         string
 }
 
 type Link struct {
@@ -36,6 +36,9 @@ func main() {
 	cLinks = mgo.DB("webcrawler").C("links")
 
 	crawler("http://www.bis2bis.com.br")
+
+	var input string
+	fmt.Scanln(&input)
 }
 
 func crawler(link string) {
@@ -47,20 +50,22 @@ func crawler(link string) {
 	cLinks.Find(bson.M{"url": link}).One(&result)
 
 	if result.Url == "" {
-		fmt.Println(link)
 		resp, err := http.Get(link)
 		if err != nil {
 			fmt.Printf("Error, %v\n", err)
-		}
-		defer resp.Body.Close()
+		} else {
+			defer resp.Body.Close()
 
-		regex, _ := regexp.Compile(`text\/html`)
-		if regex.MatchString(resp.Header.Get("Content-Type")) {
-			body, _ := ioutil.ReadAll(resp.Body)
-			if body != nil {
-				addPage(resp, string(body), link)
-				linkChecked(link)
-				findLinks(string(body), link)
+			regex, _ := regexp.Compile(`text\/html`)
+			if regex.MatchString(resp.Header.Get("Content-Type")) {
+				fmt.Println(link)
+
+				body, _ := ioutil.ReadAll(resp.Body)
+				if body != nil {
+					addPage(string(body), link)
+					linkChecked(link)
+					findLinks(string(body), link)
+				}
 			}
 		}
 	}
@@ -72,12 +77,16 @@ func findLinks(body, baselink string) {
 
 	if len(links) > 0 {
 		for _, link := range links {
-			if link[1] != baselink {
+			if link[1] != baselink && link[1] != "" {
 				switch link[1][0:1] {
 				case "/":
-					crawler(baselink + link[1])
+					if link[1][0:2] == "//" {
+						go crawler("http:" + link)
+					} else {
+						crawler(baselink + link[1])
+					}
 				case "h":
-					crawler(link[1])
+					go crawler(link[1])
 				}
 			}
 		}
@@ -89,16 +98,16 @@ func linkChecked(link string) {
 	cLinks.Insert(&Link{Url: link, LastVisit: time.Now(), NextCheck: next_date})
 }
 
-func addPage(resp *http.Response, body, link string) {
+func addPage(body, link string) {
 	regex, _ := regexp.Compile(`\<title\>(.*?)\<\/title\>`)
-	title := regex.FindAllStringSubmatch(body, 1)
+	tag := regex.FindAllStringSubmatch(body, 1)
 
-	var webpage Webpage = Webpage{
-		Title: title[0][1],
-		Body:  body,
-		Url:   link,
-		Score: 0,
+	var title string
+	if len(title) > 0 {
+		title = tag[0][1]
 	}
+
+	var webpage Webpage = Webpage{title, "TESTE", "teste", link}
 
 	cPages.Insert(webpage)
 }
