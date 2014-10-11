@@ -1,11 +1,14 @@
 package main
 
 import (
+	"crypto/md5"
 	"fmt"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
+	"io"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"regexp"
 	"time"
 )
@@ -14,6 +17,7 @@ type Webpage struct {
 	Title       string
 	Description string
 	Keywords    string
+	Hash        string
 	Url         string
 }
 
@@ -25,6 +29,9 @@ type Link struct {
 
 var cLinks *mgo.Collection
 var cPages *mgo.Collection
+
+var domains map[string]string = map[string]string{"www.bis2bis.com.br": "OK"}
+var blocks map[string]string = map[string]string{"datatracker.ietf.org": "OK"}
 
 func main() {
 	mgo, err := mgo.Dial("localhost")
@@ -50,21 +57,31 @@ func crawler(link string) {
 	cLinks.Find(bson.M{"url": link}).One(&result)
 
 	if result.Url == "" {
-		resp, err := http.Get(link)
+		client := &http.Client{}
+
+		req, err := http.NewRequest("GET", link, nil)
 		if err != nil {
 			fmt.Printf("Error, %v\n", err)
 		} else {
-			defer resp.Body.Close()
+			req.Header.Set("User-Agent", "Webcrawler-bot version 1.0")
 
-			regex, _ := regexp.Compile(`text\/html`)
-			if regex.MatchString(resp.Header.Get("Content-Type")) {
-				fmt.Println(link)
+			resp, err := client.Do(req)
+			if err != nil {
+				fmt.Printf("Error, %v\n", err)
+			} else {
+				defer resp.Body.Close()
 
-				body, _ := ioutil.ReadAll(resp.Body)
-				if body != nil {
-					addPage(string(body), link)
-					linkChecked(link)
-					findLinks(string(body), link)
+				regex, _ := regexp.Compile(`text\/html`)
+				if regex.MatchString(resp.Header.Get("Content-Type")) {
+					fmt.Println(link)
+
+					body, _ := ioutil.ReadAll(resp.Body)
+					if body != nil {
+						if addPage(string(body), link) {
+							linkChecked(link)
+							findLinks(string(body), link)
+						}
+					}
 				}
 			}
 		}
@@ -76,17 +93,33 @@ func findLinks(body, baselink string) {
 	links := regex.FindAllStringSubmatch(body, -1)
 
 	if len(links) > 0 {
+		bURL, _ := url.Parse(baselink)
 		for _, link := range links {
-			if link[1] != baselink && link[1] != "" {
-				switch link[1][0:1] {
-				case "/":
-					if link[1][0:2] == "//" {
-						go crawler("http:" + link)
+			if link[1] != baselink {
+				u, _ := url.Parse(link[1])
+				if _, ok := blocks[u.Host]; u.Host != "" && ok == false {
+					if _, ok := domains[u.Host]; ok {
+						if u.Scheme == "" {
+							if link[1][0:2] == "//" {
+								u.Scheme = "http"
+								crawler(u.String())
+							} else {
+								u.Scheme = bURL.Scheme
+								u.Host = bURL.Host
+								crawler(u.String())
+							}
+						} else {
+							crawler(link[1])
+						}
 					} else {
-						crawler(baselink + link[1])
+						domains[u.Host] = "OK"
+
+						if u.Scheme == "" {
+							u.Scheme = "http"
+						}
+
+						go crawler(u.String())
 					}
-				case "h":
-					go crawler(link[1])
 				}
 			}
 		}
@@ -98,16 +131,28 @@ func linkChecked(link string) {
 	cLinks.Insert(&Link{Url: link, LastVisit: time.Now(), NextCheck: next_date})
 }
 
-func addPage(body, link string) {
+func addPage(body, link string) bool {
 	regex, _ := regexp.Compile(`\<title\>(.*?)\<\/title\>`)
 	tag := regex.FindAllStringSubmatch(body, 1)
 
 	var title string
-	if len(title) > 0 {
+	if len(tag) > 0 {
 		title = tag[0][1]
 	}
 
-	var webpage Webpage = Webpage{title, "TESTE", "teste", link}
+	h := md5.New()
+	io.WriteString(h, body)
 
-	cPages.Insert(webpage)
+	result := Webpage{}
+	cLinks.Find(bson.M{"url": link}).One(&result)
+
+	if result.Url == "" {
+		var webpage Webpage = Webpage{title, "TESTE", "teste", string(h.Sum(nil)), link}
+
+		cPages.Insert(webpage)
+
+		return true
+	}
+
+	return false
 }
